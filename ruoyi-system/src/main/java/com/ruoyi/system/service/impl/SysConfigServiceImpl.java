@@ -39,8 +39,8 @@ public class SysConfigServiceImpl implements ISysConfigService
     }
 
     /**
-     * 查询参数配置信息
-     * 
+     * 根据参数ID查询参数配置信息
+     *
      * @param configId 参数配置ID
      * @return 参数配置信息
      */
@@ -54,23 +54,27 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 根据键名查询参数配置信息
-     * 
-     * @param configKey 参数key
+     * 先从缓存获取，缓存不存在则从数据库查询并更新缓存
+     *
+     * @param configKey 参数键名
      * @return 参数键值
      */
     @Override
     public String selectConfigByKey(String configKey)
     {
+        // 从Redis缓存中获取配置值
         String configValue = Convert.toStr(redisCache.getCacheObject(getCacheKey(configKey)));
         if (StringUtils.isNotEmpty(configValue))
         {
             return configValue;
         }
+        // 缓存中不存在，从数据库查询
         SysConfig config = new SysConfig();
         config.setConfigKey(configKey);
         SysConfig retConfig = configMapper.selectConfig(config);
         if (StringUtils.isNotNull(retConfig))
         {
+            // 将查询结果存入缓存
             redisCache.setCacheObject(getCacheKey(configKey), retConfig.getConfigValue());
             return retConfig.getConfigValue();
         }
@@ -78,8 +82,8 @@ public class SysConfigServiceImpl implements ISysConfigService
     }
 
     /**
-     * 获取验证码开关
-     * 
+     * 获取验证码开关状态
+     *
      * @return true开启，false关闭
      */
     @Override
@@ -95,8 +99,8 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 查询参数配置列表
-     * 
-     * @param config 参数配置信息
+     *
+     * @param config 参数配置信息（作为查询条件）
      * @return 参数配置集合
      */
     @Override
@@ -107,9 +111,10 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 新增参数配置
-     * 
+     * 新增成功后将配置写入缓存
+     *
      * @param config 参数配置信息
-     * @return 结果
+     * @return 结果（影响行数）
      */
     @Override
     public int insertConfig(SysConfig config)
@@ -117,6 +122,7 @@ public class SysConfigServiceImpl implements ISysConfigService
         int row = configMapper.insertConfig(config);
         if (row > 0)
         {
+            // 将新配置写入缓存
             redisCache.setCacheObject(getCacheKey(config.getConfigKey()), config.getConfigValue());
         }
         return row;
@@ -124,14 +130,17 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 修改参数配置
-     * 
+     * 如果键名发生变化，删除旧键的缓存，更新数据库后写入新缓存
+     *
      * @param config 参数配置信息
-     * @return 结果
+     * @return 结果（影响行数）
      */
     @Override
     public int updateConfig(SysConfig config)
     {
+        // 查询原配置信息
         SysConfig temp = configMapper.selectConfigById(config.getConfigId());
+        // 如果键名发生变化，删除旧的缓存
         if (!StringUtils.equals(temp.getConfigKey(), config.getConfigKey()))
         {
             redisCache.deleteObject(getCacheKey(temp.getConfigKey()));
@@ -140,15 +149,17 @@ public class SysConfigServiceImpl implements ISysConfigService
         int row = configMapper.updateConfig(config);
         if (row > 0)
         {
+            // 将新配置写入缓存
             redisCache.setCacheObject(getCacheKey(config.getConfigKey()), config.getConfigValue());
         }
         return row;
     }
 
     /**
-     * 批量删除参数信息
-     * 
-     * @param configIds 需要删除的参数ID
+     * 批量删除参数配置
+     * 内置参数不可删除，删除后清除对应缓存
+     *
+     * @param configIds 需要删除的参数ID数组
      */
     @Override
     public void deleteConfigByIds(Long[] configIds)
@@ -156,17 +167,20 @@ public class SysConfigServiceImpl implements ISysConfigService
         for (Long configId : configIds)
         {
             SysConfig config = selectConfigById(configId);
+            // 校验是否为内置参数
             if (StringUtils.equals(UserConstants.YES, config.getConfigType()))
             {
                 throw new ServiceException(String.format("内置参数【%1$s】不能删除 ", config.getConfigKey()));
             }
             configMapper.deleteConfigById(configId);
+            // 删除缓存
             redisCache.deleteObject(getCacheKey(config.getConfigKey()));
         }
     }
 
     /**
      * 加载参数缓存数据
+     * 从数据库加载所有配置到Redis缓存
      */
     @Override
     public void loadingConfigCache()
@@ -180,6 +194,7 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 清空参数缓存数据
+     * 删除Redis中所有参数配置缓存
      */
     @Override
     public void clearConfigCache()
@@ -190,6 +205,7 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 重置参数缓存数据
+     * 先清空缓存，再重新从数据库加载
      */
     @Override
     public void resetConfigCache()
@@ -200,14 +216,15 @@ public class SysConfigServiceImpl implements ISysConfigService
 
     /**
      * 校验参数键名是否唯一
-     * 
+     *
      * @param config 参数配置信息
-     * @return 结果
+     * @return 结果（UserConstants.UNIQUE表示唯一，UserConstants.NOT_UNIQUE表示不唯一）
      */
     @Override
     public boolean checkConfigKeyUnique(SysConfig config)
     {
         Long configId = StringUtils.isNull(config.getConfigId()) ? -1L : config.getConfigId();
+        // 查询相同键名的配置
         SysConfig info = configMapper.checkConfigKeyUnique(config.getConfigKey());
         if (StringUtils.isNotNull(info) && info.getConfigId().longValue() != configId.longValue())
         {
@@ -217,10 +234,10 @@ public class SysConfigServiceImpl implements ISysConfigService
     }
 
     /**
-     * 设置cache key
-     * 
+     * 生成缓存键
+     *
      * @param configKey 参数键
-     * @return 缓存键key
+     * @return 缓存键key（格式：SYS_CONFIG_KEY + configKey）
      */
     private String getCacheKey(String configKey)
     {
